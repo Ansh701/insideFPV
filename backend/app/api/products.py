@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db import get_session
 from app.models import Product, ProductSnapshot, ProductStatus
+from app.services.check_diagnostics import public_check_error
 from app.services.search import ProductSearchResult, ProductSearchService, SearchFilters
 
 router = APIRouter(prefix="/api/products", tags=["products"])
@@ -51,6 +52,12 @@ async def get_product(
     )
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found.")
+    latest_error = await session.scalar(
+        select(ProductSnapshot.error)
+        .where(ProductSnapshot.product_id == product.id)
+        .order_by(ProductSnapshot.checked_at.desc(), ProductSnapshot.id.desc())
+        .limit(1)
+    )
     return {
         "id": product.id,
         "name": product.name,
@@ -63,6 +70,7 @@ async def get_product(
         "currency": product.currency,
         "attributes": product.attributes,
         "last_checked_at": product.last_checked_at,
+        "latest_check_error": public_check_error(latest_error),
         "first_seen_at": product.first_seen_at,
     }
 
@@ -96,7 +104,7 @@ async def get_history(
                 "classification_provider": row.classification_provider,
                 "confidence": row.confidence,
                 "checked_at": row.checked_at,
-                "error": row.error,
+                "error": public_check_error(row.error),
             }
             for row in rows
         ]

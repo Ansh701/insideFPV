@@ -1,8 +1,9 @@
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Product, ProductStatus, Retailer
+from app.models import Product, ProductSnapshot, ProductStatus, Retailer
 from app.services.search import ProductSearchService, SearchFilters
 
 
@@ -42,6 +43,24 @@ async def _catalog(session: AsyncSession) -> None:
                 current_status=ProductStatus.OUT_OF_STOCK,
                 current_price=Decimal("12999"),
                 manufacturer="Holybro",
+            ),
+            Product(
+                retailer_id=robu.id,
+                canonical_url="https://robu.in/product/random-screws",
+                name="M3 Random Screws",
+                normalized_name="m3 random screws",
+                category="Other",
+                current_status=ProductStatus.IN_STOCK,
+                current_price=Decimal("99"),
+            ),
+            Product(
+                retailer_id=robu.id,
+                canonical_url="https://robu.in/product/unpriced-pi",
+                name="Raspberry Pi Compute Module",
+                normalized_name="raspberry pi compute module",
+                category="Companion Computers",
+                current_status=ProductStatus.UNKNOWN,
+                current_price=None,
             ),
         ]
     )
@@ -97,5 +116,47 @@ async def test_typo_returns_actionable_fuzzy_suggestion(session: AsyncSession) -
 async def test_search_is_paginated(session: AsyncSession) -> None:
     await _catalog(session)
     result = await ProductSearchService().search(session, SearchFilters(limit=1, offset=1))
-    assert result.total == 3
+    assert result.total == 4
     assert len(result.items) == 1
+
+
+async def test_default_search_hides_other_but_explicit_other_remains_queryable(
+    session: AsyncSession,
+) -> None:
+    await _catalog(session)
+    service = ProductSearchService()
+
+    default_result = await service.search(session, SearchFilters())
+    other_result = await service.search(session, SearchFilters(category="Other"))
+
+    assert all(item.category != "Other" for item in default_result.items)
+    assert [item.name for item in other_result.items] == ["M3 Random Screws"]
+
+
+async def test_price_filter_excludes_unknown_prices_and_exposes_safe_latest_error(
+    session: AsyncSession,
+) -> None:
+    await _catalog(session)
+    unpriced = await session.scalar(
+        select(Product).where(Product.name == "Raspberry Pi Compute Module")
+    )
+    assert unpriced is not None
+    session.add(
+        ProductSnapshot(
+            product_id=unpriced.id,
+            status=ProductStatus.UNKNOWN,
+            classification_source="ERROR",
+            content_hash="0" * 64,
+            error="ThinkRobotics: RetailerFetchError: Retailer responded with HTTP 403.",
+        )
+    )
+    await session.commit()
+
+    result = await ProductSearchService().search(session, SearchFilters(max_price=Decimal("15000")))
+    diagnostic = await ProductSearchService().search(session, SearchFilters(query="Compute Module"))
+
+    assert all(item.price is not None for item in result.items)
+    assert diagnostic.items[0].latest_check_error == (
+        "The retailer blocked the automated request (HTTP 403)."
+    )
+    assert "RetailerFetchError" not in (diagnostic.items[0].latest_check_error or "")

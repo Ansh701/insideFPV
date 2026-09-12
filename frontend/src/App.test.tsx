@@ -27,6 +27,22 @@ const products = {
       currency: "INR",
       attributes: {},
       last_checked_at: "2026-09-11T10:00:00Z",
+      latest_check_error: null,
+    },
+    {
+      id: "p2",
+      name: "Raspberry Pi Compute Module",
+      retailer: "ThinkRobotics",
+      retailer_domain: "thinkrobotics.com",
+      canonical_url: "https://thinkrobotics.com/products/raspberry-pi-compute-module",
+      manufacturer: "Raspberry Pi",
+      category: "Companion Computers",
+      status: "UNKNOWN",
+      price: null,
+      currency: "INR",
+      attributes: {},
+      last_checked_at: "2026-09-11T10:00:00Z",
+      latest_check_error: "The retailer blocked the automated request (HTTP 403).",
     },
   ],
   total: 1,
@@ -101,4 +117,22 @@ test("validates and submits a watch without losing useful input", async () => {
   await user.click(screen.getByRole("button", { name: "Add watch" }));
   await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/watchlist"), expect.objectContaining({ method: "POST" })));
   expect(await screen.findByText("Product added to your watchlist.")).toBeInTheDocument();
+});
+
+test("defaults to relevant products and sends practical catalog filters", async () => {
+  const user = userEvent.setup();
+  window.history.replaceState({}, "", "/products");
+  render(<App />);
+
+  expect(await screen.findByDisplayValue("All relevant categories")).toBeInTheDocument();
+  expect(screen.getByText("The retailer blocked the automated request (HTTP 403).")).toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText("Retailer"), "ThinkRobotics");
+  await user.type(screen.getByLabelText("Minimum price"), "5000");
+  await user.type(screen.getByLabelText("Maximum price"), "15000");
+  await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+    expect.stringMatching(/\/api\/products\?.*retailer=ThinkRobotics.*min_price=5000.*max_price=15000/),
+    expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+  ));
 });

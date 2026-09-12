@@ -18,6 +18,7 @@ class DiscoveryFetcher:
             return (
                 "<a href='/product/new-pixhawk-controller/?utm_source=category&ref=grid'>"
                 "New Pixhawk Controller</a>"
+                "<a href='/product/m3-random-frame-screws'>Random frame screws</a>"
             )
         return "<h1>Existing product</h1><p>Out of stock</p>"
 
@@ -54,6 +55,32 @@ async def test_category_discovery_inserts_new_searchable_product_once(
         assert discovered.category == "Flight Controllers"
         assert discovered.name == "New Pixhawk Controller"
         assert await session.scalar(select(func.count()).select_from(Product)) == 4
+
+
+async def test_category_discovery_rejects_irrelevant_accessories(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        await seed_database(session)
+        await session.execute(update(CategoryWatch).values(enabled=False))
+        watch = await session.scalar(
+            select(CategoryWatch).where(CategoryWatch.source_url.contains("product-category"))
+        )
+        assert watch is not None
+        watch.enabled = True
+        await session.commit()
+
+    await DiscoveryService(
+        session_factory,
+        registry=default_registry(),
+        fetcher=DiscoveryFetcher(),
+    ).run()
+
+    async with session_factory() as session:
+        irrelevant = await session.scalar(
+            select(Product).where(Product.canonical_url.contains("random-frame-screws"))
+        )
+        assert irrelevant is None
 
 
 async def test_category_discovery_failure_is_reported_without_deleting_products(

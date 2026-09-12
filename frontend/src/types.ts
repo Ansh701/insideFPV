@@ -30,6 +30,7 @@ export interface Product {
   currency: string;
   attributes: Record<string, unknown>;
   last_checked_at: string | null;
+  latest_check_error: string | null;
 }
 
 export interface ProductPage {

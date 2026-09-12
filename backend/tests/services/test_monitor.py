@@ -10,6 +10,7 @@ from app.services.alerting import AlertDispatcher
 from app.services.llm.service import LLMService
 from app.services.monitor import MonitorService
 from app.services.seed import seed_database
+from app.sources.http import RetailerFetchError
 from app.sources.registry import default_registry
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
@@ -146,3 +147,71 @@ async def test_telegram_failure_does_not_roll_back_observed_business_state(
         assert len(messaging.messages) == 1
         assert retried is not None and retried.delivery_status is AlertDeliveryStatus.SENT
         assert retried.delivered_at is not None
+
+
+async def test_monitor_replaces_seed_title_and_populates_thinkrobotics_price(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    html = (FIXTURES / "thinkrobotics_variants.html").read_text(encoding="utf-8")
+
+    class ThinkFetcher:
+        async def get_text(self, url: str) -> str:
+            return html
+
+    async with session_factory() as session:
+        await seed_database(session)
+        product = await session.scalar(
+            select(Product).where(Product.canonical_url.contains("raspberry-pi-5"))
+        )
+        assert product is not None
+        product.name = "Generic seeded title"
+        product.normalized_name = "generic seeded title"
+        await session.commit()
+        product_id = product.id
+
+    await MonitorService(
+        session_factory,
+        registry=default_registry(),
+        fetcher=ThinkFetcher(),
+        llm=LLMService([]),
+        concurrency=1,
+    ).run(product_ids=[product_id], trigger="test")
+
+    async with session_factory() as session:
+        refreshed = await session.get(Product, product_id)
+        assert refreshed is not None
+        assert refreshed.name == "Raspberry Pi 5"
+        assert refreshed.normalized_name == "raspberry pi 5"
+        assert str(refreshed.current_price) == "7799.99"
+        assert refreshed.category == "Companion Computers"
+
+
+async def test_http_403_is_preserved_as_an_unknown_error_snapshot(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    class ForbiddenFetcher:
+        async def get_text(self, url: str) -> str:
+            raise RetailerFetchError("Retailer responded with HTTP 403.")
+
+    async with session_factory() as session:
+        await seed_database(session)
+        product_id = await _pixhawk_id(session)
+
+    result = await MonitorService(
+        session_factory,
+        registry=default_registry(),
+        fetcher=ForbiddenFetcher(),
+        llm=LLMService([]),
+        concurrency=1,
+    ).run(product_ids=[product_id], trigger="test")
+
+    async with session_factory() as session:
+        snapshot = await session.scalar(
+            select(ProductSnapshot).where(ProductSnapshot.product_id == product_id)
+        )
+        product = await session.get(Product, product_id)
+
+    assert result.errors_count == 1
+    assert snapshot is not None and snapshot.status is ProductStatus.UNKNOWN
+    assert "HTTP 403" in (snapshot.error or "")
+    assert product is not None and product.current_status is ProductStatus.UNKNOWN

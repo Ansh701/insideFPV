@@ -81,13 +81,60 @@ def _product_nodes(value: object) -> list[dict[str, Any]]:
     return nodes
 
 
-def infer_category(name: str | None) -> str | None:
-    lowered = (name or "").lower()
-    if any(term in lowered for term in ("hat", "carrier board", "baseboard")):
+RELEVANT_CATEGORIES = (
+    "Flight Controllers",
+    "Companion Computers",
+    "HATs & Carrier Boards",
+)
+
+
+def infer_category(name: str | None, product_type: str | None = None) -> str | None:
+    """Classify only the narrow product families RotorWatch intentionally tracks."""
+    lowered = re.sub(r"\s+", " ", f"{name or ''} {product_type or ''}".lower()).strip()
+    if any(
+        term in lowered
+        for term in (
+            " hat",
+            "hat+",
+            "carrier board",
+            "baseboard",
+            "pcie to m.2",
+            "pcie-to-m.2",
+        )
+    ):
         return "HATs & Carrier Boards"
-    if any(term in lowered for term in ("flight controller", "pixhawk", "autopilot")):
+    accessory_terms = (
+        "screw",
+        "cable",
+        "camera",
+        "sd card",
+        "power supply",
+        "power adapter",
+        "cooler",
+        "cooling fan",
+        "heatsink",
+        "case for",
+        "multimeter",
+        "propeller",
+        "drone frame",
+        "raspberry pi pico",
+    )
+    if any(term in lowered for term in accessory_terms):
+        return None
+    if any(
+        term in lowered
+        for term in ("flight controller", "pixhawk", "autopilot", "ardupilot", "naze")
+    ) or re.search(r"\bapm\b", lowered):
         return "Flight Controllers"
-    if any(term in lowered for term in ("raspberry pi", "jetson", "companion computer")):
+    if any(
+        term in lowered
+        for term in (
+            "raspberry pi",
+            "jetson",
+            "companion computer",
+            "single board computer",
+        )
+    ):
         return "Companion Computers"
     return None
 
@@ -157,7 +204,9 @@ class RetailerAdapter(ABC):
                 return ProductExtraction(
                     status=status,
                     product_name=name,
-                    price=_decimal(offers.get("price") or product.get("price")),
+                    price=_decimal(
+                        offers.get("price") or offers.get("lowPrice") or product.get("price")
+                    ),
                     currency=str(offers.get("priceCurrency") or "INR")[:3].upper(),
                     manufacturer=str(manufacturer) if manufacturer else None,
                     category=str(product.get("category") or infer_category(name) or "Other"),

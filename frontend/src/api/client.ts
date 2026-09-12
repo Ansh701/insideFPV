@@ -61,10 +61,22 @@ export async function loadHistory(productId: string): Promise<Snapshot[]> {
   return result.items;
 }
 
-export async function searchProducts(query: string, status: string, category: string): Promise<ProductPage> {
+export interface ProductSearchOptions {
+  query: string;
+  status: string;
+  category: string;
+  retailer: string;
+  minPrice: string;
+  maxPrice: string;
+}
+
+export async function searchProducts(options: ProductSearchOptions): Promise<ProductPage> {
   const params = new URLSearchParams({ limit: "50" });
-  if (query.trim()) params.set("query", query.trim());
-  if (status) params.set("availability", status);
-  if (category) params.set("category", category);
+  if (options.query.trim()) params.set("query", options.query.trim());
+  if (options.status) params.set("availability", options.status);
+  if (options.category) params.set("category", options.category);
+  if (options.retailer) params.set("retailer", options.retailer);
+  if (options.minPrice) params.set("min_price", options.minPrice);
+  if (options.maxPrice) params.set("max_price", options.maxPrice);
   return request<ProductPage>(`/api/products?${params}`);
 }

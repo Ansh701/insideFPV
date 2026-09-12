@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import CategoryWatch, Product, Retailer, utcnow
 from app.services.url_security import normalize_supported_url
+from app.sources.base import infer_category
 from app.sources.registry import AdapterRegistry
 
 logger = structlog.get_logger()
@@ -84,12 +85,20 @@ class DiscoveryService:
                         )
                         if canonical_url in existing_urls:
                             continue
+                        product_name = _name_from_url(canonical_url)
+                        if infer_category(product_name) != category:
+                            logger.info(
+                                "category_discovery_candidate",
+                                retailer=retailer_name,
+                                status="irrelevant",
+                            )
+                            continue
                         session.add(
                             Product(
                                 retailer_id=retailer_id,
                                 canonical_url=canonical_url,
-                                name=_name_from_url(canonical_url),
-                                normalized_name=_name_from_url(canonical_url).lower(),
+                                name=product_name,
+                                normalized_name=product_name.lower(),
                                 category=category,
                             )
                         )

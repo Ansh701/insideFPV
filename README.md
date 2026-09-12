@@ -18,7 +18,7 @@ Specialist drone and electronics stock changes unpredictably. A product can rema
 - Ordered Gemini → OpenAI → Anthropic failover with one-provider-at-a-time execution.
 - Deterministic chat commands and search that remain useful with no LLM credentials.
 - Dynamic watch additions by catalog name or supported retailer URL.
-- Bounded category discovery for Flight Controllers and Companion Computers.
+- Bounded category discovery for Flight Controllers and Companion Computers, with deterministic relevance rules that reject obvious accessories and unrelated catalog items.
 - Search by name, category, availability, price, retailer, and manufacturer, with typo suggestions.
 - A connected React operations console for products, history, watches, monitor runs, failures, and alerts.
 - Protected manual monitor action plus reusable scheduled CLI and deterministic demo commands.
@@ -87,7 +87,7 @@ The root multi-stage Docker build uses Node 22 only to compile `frontend/dist`, 
 2. Full scheduled/admin runs scan only the configured category pages, collect at most 50 adapter-recognized product links per category, and insert canonical unseen products.
 3. Products are checked concurrently behind a small configurable semaphore.
 4. The safe HTTP client validates scheme, retailer domain, resolved addresses, redirects, response size, timeout, and retry conditions.
-5. The adapter prefers schema.org Product JSON-LD or embedded product JSON, then deterministic site-specific selectors and wording.
+5. The adapter prefers schema.org Product JSON-LD or embedded product/variant JSON, then deterministic site-specific selectors and wording. ThinkRobotics Shopify prices are parsed from the selected/default variant when available and from the main product price block otherwise.
 6. Only an `UNKNOWN` deterministic result sends trimmed product evidence to the LLM service.
 7. A validated snapshot is appended. The product's current projection is updated from that observation.
 8. The new valid snapshot is compared with the previous valid snapshot. The first valid snapshot is a baseline.
@@ -146,7 +146,7 @@ Retailer wording is normalized into one enum:
 - `PREORDER`
 - `UNKNOWN`
 
-Ambiguous evidence remains `UNKNOWN`; it is never guessed into stock. Error snapshots are preserved for diagnostics but do not become the previous *valid* state used for favorable transition comparison.
+Ambiguous evidence remains `UNKNOWN`; it is never guessed into stock. Error snapshots are preserved for diagnostics but do not become the previous *valid* state used for favorable transition comparison. Product responses derive a safe `latest_check_error` from the newest snapshot (for example, a retailer HTTP 403 or timeout) while keeping internal exception detail out of the frontend.
 
 Alerting transitions are:
 
@@ -182,16 +182,20 @@ The registry resolves an adapter; monitor, watchlist, and discovery services con
 
 No monitor-service rewrite is required. Plain HTTP is used for every current source. There is no CAPTCHA bypass, authentication bypass, browser automation, or anti-bot workaround.
 
+ThinkRobotics exposes two current storefront shapes. Variant products embed a Shopify JSON array with price values in paise; RotorWatch selects the variant referenced by the main add-to-cart form, falling back to the first advertised variant in source order. That price becomes `current_price`, while sanitized variant name, availability, price, and SKU values remain in product attributes. Products without variant JSON use the first selling-price value in `.product-main__price`. A higher crossed-out value is retained as `compare_at_price`; it never replaces the selling price. All persisted product prices use `Decimal` and currency `INR`. Compact commerce fields are included in the content fingerprint even though full scripts are removed.
+
+Discovery is relevance-first rather than a general retailer crawl. Candidate URL slugs must deterministically match the configured watch category. Raspberry Pi boards and credible Jetson/SBC kits qualify as companion computers; actual HAT/carrier/interface boards use the HAT category; cables, cameras, SD cards, power supplies, Pico boards, screws, and similar accessories do not qualify. Existing history is not deleted. Successful monitoring corrects the current category projection from source titles, and the default product search excludes `Other`; an explicit `category=Other` query still retrieves retained records.
+
 ### Current sources and live development check
 
 | Retailer | Adapter/fixture coverage | Limited live path checked on 12 Sep 2026 |
 | --- | --- | --- |
 | Robu | Structured and deterministic fixture parsing | `https://robu.in/product-category/raspberry-pi-5/` responded with HTTP 403 to the plain development client. Failure was isolated. |
-| ThinkRobotics | Shopify embedded JSON and deterministic fixture parsing | `https://thinkrobotics.com/products/raspberry-pi-5` was reachable; the adapter deterministically parsed Raspberry Pi 5 as `IN_STOCK` and found five bounded discovery links. |
+| ThinkRobotics | Shopify variant JSON plus main-price fallback | Raspberry Pi 5, Pixhawk Pro 6C Kit, APM Pixhawk Power Module, Raspberry Pi AI HAT+, and one current pre-order page were reachable. Titles, `INR` prices, status, variants, and narrow categories parsed deterministically. |
 | Zbotic | Structured and deterministic fixture parsing | `https://zbotic.in/product/holybro-pixhawk-6x-icm-45686/` responded with HTTP 403. Failure was isolated. |
 | Evelta | Structured and deterministic fixture parsing | `https://evelta.com/raspberry-pi-5-with-2-4-8gb-ram/` responded with HTTP 403. Failure was isolated. |
 
-The fixture tests are the repeatable contract; CI never depends on live retailers. The live check is deliberately four sequential requests with no retries. A 403 is reported as a source failure rather than bypassed. Run the development-only check with `python -m app.scripts.live_check`; it exits non-zero when any source is unavailable.
+The fixture tests are the repeatable contract; CI never depends on live retailers. The 12 Sep 2026 live check made eight sequential requests with no retries: five small representative ThinkRobotics checks and one check for each other retailer. ThinkRobotics yielded deterministic selling prices for in-stock, out-of-stock, pre-order, sale, and variant cases. Robu, Zbotic, and Evelta returned HTTP 403 to the plain client; these failures were isolated and were not bypassed. Run the development-only check with `python -m app.scripts.live_check`; it exits non-zero when any source is unavailable.
 
 ## Multi-provider LLM design
 
@@ -313,11 +317,11 @@ Development OpenAPI documentation is available at `/docs`; schema endpoints are 
 | `POST` | `/api/chat` | Reuse Telegram chat behavior for demo/testing. |
 | `POST` | `/webhooks/telegram` | Idempotent Telegram ingress. |
 
-Search parameters are `query`, `category`, `availability`, `min_price`, `max_price`, `retailer`, `manufacturer`, `limit`, and `offset`. API models never expose ORM objects directly. Application-defined failures use an `error` object with a stable `code`, a human message describing what/why, and a recovery `action`.
+Search parameters are `query`, `category`, `availability`, `min_price`, `max_price`, `retailer`, `manufacturer`, `limit`, and `offset`. With no category, results default to Flight Controllers, Companion Computers, and HATs & Carrier Boards; pass `category=Other` explicitly to inspect retained unrelated/accessory records. Numeric price filters naturally exclude `NULL` prices. Product results include a sanitized latest-check explanation when the newest snapshot is an error. API models never expose ORM objects directly. Application-defined failures use an `error` object with a stable `code`, a human message describing what/why, and a recovery `action`.
 
 ## Frontend and UX
 
-The React/TypeScript/Vite console is intentionally thin and calls the FastAPI API only. It provides Dashboard, Products, Watchlist, Monitoring, and Alerts views; product history drawer; optimistic-looking but server-confirmed watch actions; manual monitoring; health/failure summaries; and source links.
+The React/TypeScript/Vite console is intentionally thin and calls the FastAPI API only. It provides Dashboard, Products, Watchlist, Monitoring, and Alerts views; product history drawer; optimistic-looking but server-confirmed watch actions; manual monitoring; health/failure summaries; and source links. Product Intelligence defaults to “All relevant categories,” keeps `Other` explicitly selectable, and exposes availability, category, retailer, minimum-price, and maximum-price filters. Unknown checks show “Last attempt” and a sanitized reason instead of implying live certainty.
 
 Production requests are relative (`/api/...`) and therefore same-origin. Direct navigation and refresh work for `/products`, `/watchlist`, `/monitoring`, and `/alerts`; the browser history API keeps the address bar in sync. FastAPI's fallback never captures `/api`, `/health`, `/ready`, `/webhooks`, `/docs`, `/redoc`, `/openapi.json`, or `/assets` failures.
 
@@ -602,7 +606,7 @@ After deployment, verify the single URL at `/`, `/products`, `/api/dashboard/sum
 
 ## Known limitations and deliberate omissions
 
-- Three retailers returned HTTP 403 to the limited plain-HTTP check from this development environment. The implementation does not bypass their controls. Their deterministic contracts are fixture-tested, and run-level failures are visible. Markup should be recaptured periodically from an allowed development context.
+- Robu, Zbotic, and Evelta returned HTTP 403 to the limited plain-HTTP check from this development environment. The implementation does not bypass their controls. Their deterministic contracts are fixture-tested, and run-level/product-level failures are visible. Markup should be recaptured periodically from an allowed development context.
 - Category URLs are seed configuration and can drift. Discovery is intentionally bounded and conservative, not a general crawler.
 - Process-local rate limiting and LLM cooldown are appropriate to this assignment; multi-instance deployments would need a shared mechanism only after scale proves it necessary.
 - Failed alerts can be retried in a bounded batch through the protected admin endpoint. Retry is intentionally operator-triggered rather than a new background queue or scheduler.

@@ -6,7 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Product, ProductStatus, Retailer
+from app.models import Product, ProductSnapshot, ProductStatus, Retailer
+from app.services.check_diagnostics import public_check_error
+from app.sources.base import RELEVANT_CATEGORIES
 
 
 class SearchFilters(BaseModel):
@@ -36,6 +38,7 @@ class ProductSearchItem(BaseModel):
     currency: str
     attributes: dict[str, object]
     last_checked_at: datetime | None
+    latest_check_error: str | None
 
 
 class ProductSearchResult(BaseModel):
@@ -46,7 +49,7 @@ class ProductSearchResult(BaseModel):
     suggestion: str | None = None
 
 
-def _item(product: Product, retailer: Retailer) -> ProductSearchItem:
+def _item(product: Product, retailer: Retailer, latest_error: str | None) -> ProductSearchItem:
     return ProductSearchItem(
         id=str(product.id),
         name=product.name,
@@ -60,6 +63,7 @@ def _item(product: Product, retailer: Retailer) -> ProductSearchItem:
         currency=product.currency,
         attributes=product.attributes,
         last_checked_at=product.last_checked_at,
+        latest_check_error=public_check_error(latest_error),
     )
 
 
@@ -77,6 +81,8 @@ class ProductSearchService:
             )
         if filters.category:
             conditions.append(func.lower(Product.category) == filters.category.lower())
+        else:
+            conditions.append(Product.category.in_(RELEVANT_CATEGORIES))
         if filters.availability:
             conditions.append(Product.current_status == filters.availability)
         if filters.min_price is not None:
@@ -88,8 +94,16 @@ class ProductSearchService:
         if filters.manufacturer:
             conditions.append(func.lower(Product.manufacturer) == filters.manufacturer.lower())
 
+        latest_error = (
+            select(ProductSnapshot.error)
+            .where(ProductSnapshot.product_id == Product.id)
+            .order_by(ProductSnapshot.checked_at.desc(), ProductSnapshot.id.desc())
+            .limit(1)
+            .correlate(Product)
+            .scalar_subquery()
+        )
         base = (
-            select(Product, Retailer)
+            select(Product, Retailer, latest_error.label("latest_error"))
             .join(Retailer, Product.retailer_id == Retailer.id)
             .where(*conditions)
         )
@@ -102,7 +116,7 @@ class ProductSearchService:
                 .limit(filters.limit)
             )
         ).all()
-        items = [_item(product, retailer) for product, retailer in rows]
+        items = [_item(product, retailer, error) for product, retailer, error in rows]
         suggestion: str | None = None
         if not items and filters.query:
             query_value = filters.query
