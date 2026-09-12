@@ -1,0 +1,1 @@
+"""Retailer-specific acquisition adapters."""
