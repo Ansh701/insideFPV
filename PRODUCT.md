@@ -8,7 +8,7 @@ web
 
 ## Stack
 
-Confirmed by the assignment: React, TypeScript, Vite, and a FastAPI/PostgreSQL backend. Deployment targets are a static frontend on Vercel or Render and the API/database/cron on Render.
+Confirmed by the assignment: React, TypeScript, Vite, and a FastAPI/PostgreSQL backend. Production uses one Render Docker Web Service: Node compiles the frontend during the multi-stage build, and FastAPI serves those assets plus the API from one origin. Managed Render PostgreSQL and a native Python Render Cron remain separate operational resources in the same project.
 
 ## Users
 

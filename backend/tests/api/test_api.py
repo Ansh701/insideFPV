@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 from sqlalchemy import func, select
@@ -152,3 +153,78 @@ async def test_state_changing_endpoints_have_a_bounded_process_local_rate_limit(
     assert retry_first.status_code == 401
     assert retry_second.status_code == 401
     assert retry_limited.status_code == 429
+
+
+async def test_production_frontend_and_backend_share_routes_without_spa_leaks(
+    session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    async with session_factory() as session:
+        await seed_database(session)
+
+    async def session_override() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    frontend = tmp_path / "dist"
+    assets = frontend / "assets"
+    assets.mkdir(parents=True)
+    (frontend / "index.html").write_text(
+        "<!doctype html><html><body><div id='root'>rotorwatch-shell</div></body></html>",
+        encoding="utf-8",
+    )
+    (frontend / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
+    (assets / "app.js").write_text("console.log('rotorwatch')", encoding="utf-8")
+    (tmp_path / "container-secret.txt").write_text("must-not-be-served", encoding="utf-8")
+
+    settings = Settings(
+        app_env="production",
+        database_url="sqlite+aiosqlite://",
+        admin_secret="a-real-random-deployment-secret",
+        trusted_hosts="testserver",
+    )
+    app = create_app(
+        settings=settings,
+        session_factory=session_factory,
+        frontend_dist_dir=frontend,
+    )
+    app.dependency_overrides[get_session] = session_override
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        root = await client.get("/")
+        nested = await client.get("/products")
+        asset = await client.get("/assets/app.js")
+        favicon = await client.get("/favicon.svg")
+        health = await client.get("/health")
+        ready = await client.get("/ready")
+        products = await client.get("/api/products")
+        unknown_api = await client.get("/api/not-a-route")
+        webhook = await client.get("/webhooks/telegram")
+        docs = await client.get("/docs")
+        redoc = await client.get("/redoc")
+        openapi = await client.get("/openapi.json")
+        missing_asset = await client.get("/assets/missing.js")
+        traversal = await client.get("/assets/%2e%2e/container-secret.txt")
+
+    assert root.status_code == 200
+    assert nested.status_code == 200
+    assert root.text == nested.text
+    assert "rotorwatch-shell" in root.text
+    assert root.headers["content-type"].startswith("text/html")
+    assert "default-src 'self'" in root.headers["content-security-policy"]
+    assert asset.status_code == 200
+    assert "javascript" in asset.headers["content-type"]
+    assert favicon.status_code == 200
+    assert "svg" in favicon.headers["content-type"]
+    assert health.json() == {"status": "ok"}
+    assert ready.json() == {"status": "ready"}
+    assert products.json()["total"] == 3
+    assert unknown_api.status_code == 404
+    assert "text/html" not in unknown_api.headers.get("content-type", "")
+    assert webhook.status_code in {404, 405}
+    assert "text/html" not in webhook.headers.get("content-type", "")
+    for backend_route in (docs, redoc, openapi, missing_asset):
+        assert backend_route.status_code == 404
+        assert "text/html" not in backend_route.headers.get("content-type", "")
+    assert traversal.status_code == 404
+    assert "must-not-be-served" not in traversal.text

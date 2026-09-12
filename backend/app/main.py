@@ -2,16 +2,18 @@ import uuid
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from time import monotonic
 from typing import cast
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.staticfiles import StaticFiles
 
 from app.api.chat import router as chat_router
 from app.api.dashboard import router as dashboard_router
@@ -35,6 +37,7 @@ def create_app(
     settings: Settings | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     telegram: object | None = None,
+    frontend_dist_dir: Path | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
     factory = session_factory or SessionFactory
@@ -129,6 +132,15 @@ def create_app(
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if production:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "font-src 'self'; img-src 'self' data:; connect-src 'self'; "
+                "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+            )
+        if request.url.path.startswith("/assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
     @app.exception_handler(Exception)
@@ -169,6 +181,39 @@ def create_app(
     app.include_router(dashboard_router)
     app.include_router(chat_router)
     app.include_router(telegram_router)
+
+    dist_dir = frontend_dist_dir or Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    index_file = dist_dir / "index.html"
+    assets_dir = dist_dir / "assets"
+    if index_file.is_file():
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+        favicon_file = dist_dir / "favicon.svg"
+        if favicon_file.is_file():
+
+            @app.get("/favicon.svg", include_in_schema=False)
+            async def frontend_favicon() -> FileResponse:
+                return FileResponse(favicon_file, media_type="image/svg+xml")
+
+        reserved_roots = {
+            "api",
+            "assets",
+            "docs",
+            "health",
+            "openapi.json",
+            "ready",
+            "redoc",
+            "webhooks",
+        }
+
+        @app.get("/{frontend_path:path}", include_in_schema=False)
+        async def frontend_app(frontend_path: str) -> FileResponse:
+            root_segment = frontend_path.split("/", 1)[0]
+            if root_segment in reserved_roots:
+                raise HTTPException(status_code=404, detail="Not found")
+            return FileResponse(index_file, media_type="text/html")
+
     return app
 
 

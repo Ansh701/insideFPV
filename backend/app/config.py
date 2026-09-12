@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,10 +15,12 @@ class Settings(BaseSettings):
     )
 
     app_env: Literal["development", "test", "production"] = "development"
-    app_base_url: str = "http://localhost:8000"
+    app_base_url: str | None = None
     database_url: str = "postgresql+asyncpg://drone:drone@localhost:5432/drone_assistant"
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
-    trusted_hosts: str = "localhost,127.0.0.1,testserver"
+    cors_origins: str | None = None
+    trusted_hosts: str | None = None
+    render_external_url: str | None = None
+    render_external_hostname: str | None = None
 
     telegram_bot_token: str | None = None
     telegram_webhook_secret: str | None = None
@@ -56,6 +59,18 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def resolve_deployment_defaults(self) -> "Settings":
+        if self.app_base_url:
+            self.app_base_url = self.app_base_url.rstrip("/")
+        elif self.render_external_url:
+            self.app_base_url = self.render_external_url.rstrip("/")
+        elif self.render_external_hostname:
+            self.app_base_url = f"https://{self._hostname(self.render_external_hostname)}"
+        else:
+            self.app_base_url = "http://localhost:8000"
+        return self
+
     @field_validator("database_url", mode="before")
     @classmethod
     def normalize_database_url(cls, value: object) -> object:
@@ -77,12 +92,42 @@ class Settings(BaseSettings):
         return tuple(configured)
 
     @property
+    def resolved_app_base_url(self) -> str:
+        return self.app_base_url or "http://localhost:8000"
+
+    @property
     def allowed_cors_origins(self) -> list[str]:
-        return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+        if self.cors_origins:
+            return self._split_csv(self.cors_origins)
+        if self.app_env == "production":
+            return []
+        return ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     @property
     def allowed_hosts(self) -> list[str]:
-        return [item.strip() for item in self.trusted_hosts.split(",") if item.strip()]
+        hosts = self._split_csv(self.trusted_hosts) if self.trusted_hosts else []
+        if self.app_env != "production" and not hosts:
+            hosts.extend(("localhost", "127.0.0.1", "testserver"))
+
+        for candidate in (
+            self.render_external_hostname,
+            self.render_external_url,
+            self.app_base_url,
+        ):
+            if candidate:
+                hostname = self._hostname(candidate)
+                if hostname and hostname not in hosts:
+                    hosts.append(hostname)
+        return hosts or ["localhost", "127.0.0.1"]
+
+    @staticmethod
+    def _split_csv(value: str) -> list[str]:
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    @staticmethod
+    def _hostname(value: str) -> str:
+        parsed = urlsplit(value if "://" in value else f"//{value}")
+        return parsed.hostname or value.split(":", 1)[0]
 
 
 @lru_cache

@@ -29,6 +29,34 @@ def test_development_cors_accepts_both_local_vite_hostnames() -> None:
     }
 
 
+def test_production_render_url_host_and_same_origin_cors_defaults() -> None:
+    settings = Settings(
+        app_env="production",
+        admin_secret="a-real-random-deployment-secret",
+        render_external_url="https://rotorwatch.onrender.com",
+        render_external_hostname="rotorwatch.onrender.com",
+    )
+
+    assert settings.app_base_url == "https://rotorwatch.onrender.com"
+    assert settings.resolved_app_base_url == settings.app_base_url
+    assert settings.allowed_cors_origins == []
+    assert "rotorwatch.onrender.com" in settings.allowed_hosts
+
+
+def test_explicit_base_url_and_trusted_hosts_override_render_defaults() -> None:
+    settings = Settings(
+        app_env="production",
+        admin_secret="a-real-random-deployment-secret",
+        app_base_url="https://drones.example.in/",
+        trusted_hosts="drones.example.in",
+        render_external_url="https://rotorwatch.onrender.com",
+        render_external_hostname="rotorwatch.onrender.com",
+    )
+
+    assert settings.resolved_app_base_url == "https://drones.example.in"
+    assert settings.allowed_hosts == ["drones.example.in", "rotorwatch.onrender.com"]
+
+
 def test_product_status_is_one_normalized_enum() -> None:
     assert {status.value for status in ProductStatus} == {
         "IN_STOCK",

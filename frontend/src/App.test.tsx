@@ -40,6 +40,7 @@ function response(data: unknown, ok = true): Promise<Response> {
 }
 
 beforeEach(() => {
+  window.history.replaceState({}, "", "/");
   localStorage.clear();
   sessionStorage.clear();
   vi.stubGlobal(
@@ -57,6 +58,21 @@ test("renders authoritative summary and product data", async () => {
   expect(await screen.findByText("Holybro Pixhawk 6X")).toBeInTheDocument();
   expect(screen.getByText("1", { selector: "[data-metric='in-stock']" })).toBeInTheDocument();
   expect(screen.getByText("Everything looks healthy")).toBeInTheDocument();
+  expect(fetch).toHaveBeenCalledWith(
+    "/api/dashboard/summary",
+    expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+  );
+});
+
+test("opens a directly entered frontend route and preserves it during navigation", async () => {
+  const user = userEvent.setup();
+  window.history.replaceState({}, "", "/products");
+
+  render(<App />);
+
+  expect(await screen.findByRole("heading", { name: "Product intelligence" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Watchlist" }));
+  expect(window.location.pathname).toBe("/watchlist");
 });
 
 test("persists an intentional dark theme", async () => {

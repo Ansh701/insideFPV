@@ -75,6 +75,10 @@ RotorWatch feels like a calm instrument panel built for a technically fluent dro
 
 The interface is spacious where decisions are made and compact where evidence is inspected. Glass is reserved for the floating command bar, hero, and monitor control. Product lists, filters, run history, and forms remain quieter so transparency never competes with operational truth.
 
+## Delivery Surface
+
+The console is compiled by Vite during the root multi-stage Docker build and served by FastAPI from the same Render Web Service and HTTPS origin as the API. Production uses relative `/api` requests and has no Node process, development server, cross-origin frontend host, or frontend-held secret. Direct navigation to each console section is preserved by the backend's narrowly scoped SPA fallback.
+
 **Key Characteristics:**
 
 - Strong asymmetric headline paired with a compact system-pulse instrument.

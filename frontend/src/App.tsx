@@ -23,14 +23,39 @@ const nav = [
   { id: "alerts" as const, label: "Alerts", icon: Bell },
 ];
 
+const pagePaths: Record<Page, string> = {
+  dashboard: "/",
+  products: "/products",
+  watchlist: "/watchlist",
+  monitoring: "/monitoring",
+  alerts: "/alerts",
+};
+
+function pageFromPath(pathname: string): Page {
+  const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  const entry = Object.entries(pagePaths).find(([, path]) => path === normalized);
+  return entry ? (entry[0] as Page) : "dashboard";
+}
+
 function initialTheme(): Theme { return localStorage.getItem("rotorwatch-theme") === "dark" ? "dark" : "light"; }
 
 export default function App() {
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPage] = useState<Page>(() => pageFromPath(window.location.pathname));
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const { data, error, loading, stage, refresh } = useConsoleData();
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem("rotorwatch-theme", theme); }, [theme]);
+  useEffect(() => {
+    const handlePopState = () => setPage(pageFromPath(window.location.pathname));
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  function navigate(target: Page) {
+    setPage(target);
+    const targetPath = pagePaths[target];
+    if (window.location.pathname !== targetPath) window.history.pushState({}, "", targetPath);
+  }
 
   function content() {
     if (loading && !data) return stage === "quiet" ? <div className="quiet-loading" aria-live="polite"><span className="sr-only">Loading console</span></div> : <LoadingState skeleton={stage === "skeleton"} />;
@@ -40,13 +65,13 @@ export default function App() {
     if (page === "watchlist") return <WatchlistPage watches={data.watches} refresh={refresh} />;
     if (page === "monitoring") return <MonitoringPage runs={data.runs} refresh={refresh} />;
     if (page === "alerts") return <AlertsPage alerts={data.alerts} />;
-    return <DashboardPage data={data} goTo={(target) => setPage(target as Page)} />;
+    return <DashboardPage data={data} goTo={(target) => navigate(target as Page)} />;
   }
 
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Skip to content</a>
-    <header className="topbar"><button className="brand" onClick={() => setPage("dashboard")} aria-label="RotorWatch dashboard"><span className="brand__mark"><Command /></span><span><strong>RotorWatch</strong><small>Inventory command</small></span></button><div className="topbar__right"><span className="connection"><i /> Backend linked</span><button className="icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} theme`}>{theme === "light" ? <Moon /> : <Sun />}</button></div></header>
-    <nav className="nav-rail" aria-label="Primary navigation">{nav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? "active" : ""} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon /><span>{label}</span></button>)}</nav>
+    <header className="topbar"><button className="brand" onClick={() => navigate("dashboard")} aria-label="RotorWatch dashboard"><span className="brand__mark"><Command /></span><span><strong>RotorWatch</strong><small>Inventory command</small></span></button><div className="topbar__right"><span className="connection"><i /> Backend linked</span><button className="icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} theme`}>{theme === "light" ? <Moon /> : <Sun />}</button></div></header>
+    <nav className="nav-rail" aria-label="Primary navigation">{nav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? "active" : ""} onClick={() => navigate(id)} aria-current={page === id ? "page" : undefined}><Icon /><span>{label}</span></button>)}</nav>
     <main id="main-content" tabIndex={-1}>{error && data && <p className="stale-banner" role="status">Fresh data could not be loaded. Showing the last successful response. <button onClick={() => void refresh()}>Retry</button></p>}{content()}</main>
     <footer><span>ROT / 01</span><p>Structured product truth for Indian drone builders.</p><span>{new Date().getFullYear()} · IST</span></footer>
   </div>;

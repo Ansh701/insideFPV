@@ -32,9 +32,17 @@ RotorWatch is a clean modular monolith. HTTP handlers are thin boundaries around
 ```mermaid
 flowchart TD
     U[Telegram user] --> TG[Telegram Bot API]
-    TG --> WH[FastAPI Telegram webhook]
-    WEB[React operations console] --> REST[FastAPI REST API]
-    CRON[Render cron / manual CLI] --> MON[Monitoring service]
+    B[Browser] -->|one public HTTPS origin| WEB
+    subgraph WEB[Render Web Service: rotorwatch]
+        API[FastAPI / Uvicorn]
+        UI[Compiled React/Vite assets]
+        UI -->|relative /api requests| API
+    end
+    API --> WH[Telegram webhook route]
+    API --> REST[REST API routes]
+    API -->|SPA fallback for client routes only| UI
+    TG --> WH
+    CRON[Render Cron / manual CLI] --> MON[Monitoring service]
     REST --> CHAT[Chat service]
     REST --> MON
     WH --> CHAT
@@ -67,7 +75,11 @@ flowchart TD
     CHANGE --> ALERT[Alert dispatcher]
     ALERT --> TG
     OPS --> DB
+    API --> DB
+    CRON --> DB
 ```
+
+The root multi-stage Docker build uses Node 22 only to compile `frontend/dist`, then copies those static files into a Python 3.12 slim runtime. Production contains no Node process or Vite development server. FastAPI owns the one public origin: API, health, readiness, webhook, and development-doc paths retain backend semantics, while fixed static assets and known client-side paths receive the React application.
 
 ### Data flow
 
@@ -269,11 +281,13 @@ Other controls include:
 - Production rejects a placeholder/short admin secret and Telegram-without-webhook-secret configuration.
 - The state-changing admin monitor endpoint requires `X-Admin-Secret`.
 - Process-local per-IP/path rate limits protect state-changing endpoints without adding Redis.
-- Strict CORS allowlist, trusted-host middleware, request timeouts, redirect limits, and a 2 MB response cap.
+- Production CORS is disabled by default because the browser and API share an origin; local development keeps an explicit Vite allowlist.
+- Trusted-host middleware derives the exact Render hostname from `RENDER_EXTERNAL_HOSTNAME` and also accepts an explicitly configured custom-domain host.
+- Request timeouts, redirect limits, and a 2 MB response cap protect retailer acquisition.
 - ORM-bound parameters rather than LLM-generated or interpolated SQL.
-- Request IDs and `nosniff`, referrer-policy, and frame-denial response headers.
+- Request IDs plus CSP, permissions policy, `nosniff`, referrer policy, and frame-denial response headers.
 - Generic production-safe internal errors; no stack trace, SQL, filesystem path, token, or environment dump in API responses.
-- HTTPS/TLS expected at Render, Vercel, and Telegram boundaries.
+- HTTPS/TLS is terminated at Render and used at the Telegram boundary.
 
 API keys are not stored in PostgreSQL. Base64 is not used as security, and no custom cryptography is introduced.
 
@@ -304,6 +318,8 @@ Search parameters are `query`, `category`, `availability`, `min_price`, `max_pri
 ## Frontend and UX
 
 The React/TypeScript/Vite console is intentionally thin and calls the FastAPI API only. It provides Dashboard, Products, Watchlist, Monitoring, and Alerts views; product history drawer; optimistic-looking but server-confirmed watch actions; manual monitoring; health/failure summaries; and source links.
+
+Production requests are relative (`/api/...`) and therefore same-origin. Direct navigation and refresh work for `/products`, `/watchlist`, `/monitoring`, and `/alerts`; the browser history API keeps the address bar in sync. FastAPI's fallback never captures `/api`, `/health`, `/ready`, `/webhooks`, `/docs`, `/redoc`, `/openapi.json`, or `/assets` failures.
 
 - Fast responses render directly without flashing a loader.
 - A quiet initial state avoids loader flash under roughly one second.
@@ -374,11 +390,28 @@ Check `http://localhost:8000/health`, `http://localhost:8000/ready`, and develop
 
 ```powershell
 Set-Location ..\frontend
-npm install
+npm ci
 npm run dev
 ```
 
-Open `http://localhost:5173`. `VITE_API_BASE_URL` defaults to `http://localhost:8000` and can be supplied in `frontend/.env.local`.
+Open `http://localhost:5173`. Vite proxies `/api`, `/health`, `/ready`, and `/webhooks` to FastAPI at `http://127.0.0.1:8000`, preserving separate local development without production CORS coupling. `VITE_API_BASE_URL` is an optional local override in `frontend/.env.local`; the production build leaves it empty.
+
+### 5. Optional combined production container
+
+With PostgreSQL running and reachable from Docker Desktop:
+
+```powershell
+Set-Location ..
+docker build -t rotorwatch .
+docker run --rm -p 10000:10000 `
+  -e APP_ENV=production `
+  -e APP_BASE_URL=http://localhost:10000 `
+  -e DATABASE_URL=postgresql+asyncpg://drone:drone@host.docker.internal:5432/drone_assistant `
+  -e ADMIN_SECRET=local-container-only-change-this-12345 `
+  rotorwatch
+```
+
+Open `http://localhost:10000`; that one process serves both the compiled console and API. The startup script migrates and seeds before accepting traffic. Use deployment secret storage rather than command-line values outside local development.
 
 ## Monitoring commands
 
@@ -415,12 +448,12 @@ Demo mode refuses to run unless `DEMO_MODE=true` and also refuses to run when `A
 ## Telegram configuration
 
 1. Create a bot with BotFather and keep the token in deployment secret storage.
-2. Set a high-entropy `TELEGRAM_WEBHOOK_SECRET` and public HTTPS `APP_BASE_URL`.
+2. Set a high-entropy `TELEGRAM_WEBHOOK_SECRET`. On Render, the public URL is derived from `RENDER_EXTERNAL_URL`; set `APP_BASE_URL` only for a custom domain.
 3. Register the webhook with Telegram:
 
 ```text
 POST https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook
-url=https://<backend-host>/webhooks/telegram
+url=https://<rotorwatch-host>/webhooks/telegram
 secret_token=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
@@ -435,10 +468,12 @@ See `.env.example` for a runnable template.
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `APP_ENV` | Yes | `development`, `test`, or `production`. |
-| `APP_BASE_URL` | Deployment | Public backend URL used for webhook configuration/documentation. |
+| `APP_BASE_URL` | No | Optional public origin override; otherwise localhost locally and `RENDER_EXTERNAL_URL` on Render. |
 | `DATABASE_URL` | Yes | PostgreSQL URL; `postgres://` and `postgresql://` are normalized to asyncpg. |
-| `CORS_ORIGINS` | Yes | Comma-separated exact frontend origins. |
-| `TRUSTED_HOSTS` | Yes | Comma-separated accepted host headers. |
+| `CORS_ORIGINS` | Local/override | Optional exact cross-origin allowlist; unset production means same-origin CORS is disabled. |
+| `TRUSTED_HOSTS` | Override | Optional accepted hosts; Render's exact external hostname is derived automatically. |
+| `RENDER_EXTERNAL_URL` | Render-managed | Render-provided public URL; do not set manually. |
+| `RENDER_EXTERNAL_HOSTNAME` | Render-managed | Render-provided exact hostname used by trusted-host validation; do not set manually. |
 | `ADMIN_SECRET` | Production | Long random secret for state-changing admin actions. |
 | `RATE_LIMIT_PER_MINUTE` | No | Per-process, per-client/path mutation limit; default 60. |
 | `TELEGRAM_BOT_TOKEN` | Telegram | Server-side Bot API token. |
@@ -458,7 +493,7 @@ See `.env.example` for a runnable template.
 | `REQUEST_MAX_RETRIES` | No | Retailer transient retries; default 1, maximum 2. |
 | `USER_AGENT` | No | Polite identifiable retailer request agent. |
 | `DEMO_MODE` | No | Explicit non-production demo guard; default false. |
-| `VITE_API_BASE_URL` | Frontend | Public API origin only; never a secret. |
+| `VITE_API_BASE_URL` | Local frontend only | Optional dev API origin; empty production builds use the current origin. Never a secret. |
 
 Any subset of LLM providers may be configured. With Gemini only, the chain ends in deterministic fallback. With no Gemini key, OpenAI becomes first. With only Anthropic, only Anthropic is called. With no keys, deterministic parsing, search, watchlists, history, and recognized commands still work.
 
@@ -485,28 +520,68 @@ Backend coverage includes all four fixture adapters; status parsing; baseline an
 
 ## Deployment
 
-### Render backend, PostgreSQL, and cron
+### Recommended: one Render Blueprint
 
-`render.yaml` defines one FastAPI web service, one PostgreSQL database, and one daily cron job.
+The root `render.yaml` creates one `RotorWatch` project with one `Production` environment containing exactly three resources: the public Docker web service `rotorwatch`, managed PostgreSQL `rotorwatch-db`, and native-Python daily cron `rotorwatch-daily-monitor`. In Render choose **New → Blueprint**, connect `https://github.com/Ansh701/insideFPV`, select branch `main`, keep the Blueprint path `render.yaml`, provide any `sync: false` secrets, and apply it.
 
-1. Create a Render Blueprint from this repository.
-2. Keep `APP_ENV=production`.
-3. Set the web service's `CORS_ORIGINS` to the exact Vercel/frontend origin and `TRUSTED_HOSTS` to the backend hostname.
-4. Add Telegram and desired LLM keys as secret environment variables; individual LLM keys remain optional.
-5. The free-compatible start command applies Alembic and the idempotent seed before Uvicorn. For a paid web service, these can instead move to Render's isolated pre-deploy command.
-6. Confirm `/health` and `/ready` before registering the Telegram webhook.
-7. Ensure the cron service has the same database, Telegram, and LLM secrets as the web service.
+The web image has two stages: Node 22 runs `npm ci` and `npm run build`; Python 3.12 slim installs the backend and receives only `frontend/dist`. Its production script runs `alembic upgrade head`, the idempotent seed, and then `exec uvicorn` on `0.0.0.0:${PORT:-10000}`. Render supplies `PORT`, `RENDER_EXTERNAL_URL`, and `RENDER_EXTERNAL_HOSTNAME`; do not duplicate them.
 
-Render cron jobs have a small minimum monthly charge under the current Render plan model; the web service and development database may use their free plans subject to Render's current limits. The backend Dockerfile is also suitable for a simple container host. No Kubernetes, queue, event bus, or background scheduler is required.
+### Exact manual **New Web Service** screen
 
-### Vercel frontend
+Use these values if creating the web service manually instead of applying the Blueprint:
 
-1. Import the repository and set Root Directory to `frontend`.
-2. Use `npm run build` and output directory `dist`.
-3. Set `VITE_API_BASE_URL` to the public Render API URL.
-4. Redeploy the backend with that Vercel URL in `CORS_ORIGINS`.
+| Render field | Exact value |
+| --- | --- |
+| Source repository | `https://github.com/Ansh701/insideFPV` |
+| Name | `rotorwatch` |
+| Project | `RotorWatch` |
+| Environment | `Production` |
+| Language / Runtime | `Docker` |
+| Branch | `main` |
+| Region | `Singapore` (same region as PostgreSQL) |
+| Root Directory | Leave blank (repository root) |
+| Dockerfile Path | `./Dockerfile` |
+| Docker Build Context Directory | `.` |
+| Docker Command | Leave blank; use the Dockerfile `CMD` |
+| Compute / Instance Type | `Free` for evaluation |
+| Health Check Path | `/health` |
+| Pre-Deploy Command | Leave blank; startup performs migration and seed on the free-compatible path |
+| Auto-Deploy | `On Commit` |
+| Build Filters | Leave blank |
+| Registry Credential | None |
+| Persistent Disk | None; product state belongs in PostgreSQL |
 
-`frontend/vercel.json` supplies SPA rewriting and basic security headers. TLS is terminated by the platforms.
+Attach the managed database's internal connection string as `DATABASE_URL`. Configure these web-service variables exactly (values shown are defaults or value sources):
+
+```dotenv
+APP_ENV=production
+DATABASE_URL=<rotorwatch-db internal connection string>
+ADMIN_SECRET=<generated high-entropy secret, at least 24 characters>
+TELEGRAM_BOT_TOKEN=<optional secret>
+TELEGRAM_WEBHOOK_SECRET=<generated high-entropy secret>
+GEMINI_API_KEY=<optional secret>
+GEMINI_MODEL=gemini-2.5-flash-lite
+OPENAI_API_KEY=<optional secret>
+OPENAI_MODEL=gpt-5-mini
+ANTHROPIC_API_KEY=<optional secret>
+ANTHROPIC_MODEL=claude-haiku-4-5
+LLM_PROVIDER_TIMEOUT_SECONDS=8
+LLM_MAX_RETRIES=1
+LLM_PROVIDER_COOLDOWN_SECONDS=60
+MONITOR_INTERVAL=daily
+MONITOR_CONCURRENCY=5
+REQUEST_TIMEOUT=12
+REQUEST_MAX_RETRIES=1
+RATE_LIMIT_PER_MINUTE=60
+USER_AGENT=RotorWatch/0.1 (+availability-monitor; contact=your-email@example.com)
+DEMO_MODE=false
+```
+
+Do **not** set `PORT`, `RENDER_EXTERNAL_URL`, `RENDER_EXTERNAL_HOSTNAME`, `CORS_ORIGINS`, `TRUSTED_HOSTS`, or `VITE_API_BASE_URL` for the normal Render deployment. A custom domain is the exception: set `APP_BASE_URL=https://your-domain.example`; its hostname is then accepted exactly. Never expose provider, Telegram, database, or admin secrets through `VITE_` variables.
+
+Create the cron in the same project/environment and region with Root Directory `backend`, runtime `Python`, Build Command `pip install .`, Start Command `python -m app.jobs.monitor`, and schedule `30 1 * * *` (01:30 UTC / 07:00 IST). Give it the same database URL, provider credentials/models, Telegram token, timeout/retry/concurrency settings, and `DEMO_MODE=false`. `render.yaml` wires these references automatically.
+
+After deployment, verify the single URL at `/`, `/products`, `/api/dashboard/summary`, `/health`, and `/ready`, then register the Telegram webhook at `https://<rotorwatch-host>/webhooks/telegram`. No standalone static host, Node production process, Kubernetes, Redis, queue, or in-process scheduler is required.
 
 ## Idempotency and graceful degradation
 
