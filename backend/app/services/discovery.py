@@ -86,7 +86,11 @@ class DiscoveryService:
                         if canonical_url in existing_urls:
                             continue
                         product_name = _name_from_url(canonical_url)
-                        if infer_category(product_name) != category:
+                        inferred_category = infer_category(product_name)
+                        accepted_categories = {category}
+                        if category == "Companion Computers":
+                            accepted_categories.add("HATs & Carrier Boards")
+                        if inferred_category not in accepted_categories:
                             logger.info(
                                 "category_discovery_candidate",
                                 retailer=retailer_name,
@@ -99,7 +103,7 @@ class DiscoveryService:
                                 canonical_url=canonical_url,
                                 name=product_name,
                                 normalized_name=product_name.lower(),
-                                category=category,
+                                category=inferred_category,
                             )
                         )
                         existing_urls.add(canonical_url)

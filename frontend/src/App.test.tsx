@@ -44,6 +44,21 @@ const products = {
       last_checked_at: "2026-09-11T10:00:00Z",
       latest_check_error: "The retailer blocked the automated request (HTTP 403).",
     },
+    {
+      id: "p3",
+      name: "Pre-order controller",
+      retailer: "ThinkRobotics",
+      retailer_domain: "thinkrobotics.com",
+      canonical_url: "https://thinkrobotics.com/products/preorder-controller",
+      manufacturer: null,
+      category: "Flight Controllers",
+      status: "PREORDER",
+      price: "9999.99",
+      currency: "INR",
+      attributes: {},
+      last_checked_at: "2026-09-11T10:00:00Z",
+      latest_check_error: null,
+    },
   ],
   total: 1,
   limit: 25,
@@ -125,6 +140,7 @@ test("defaults to relevant products and sends practical catalog filters", async 
   render(<App />);
 
   expect(await screen.findByDisplayValue("All relevant categories")).toBeInTheDocument();
+  expect(screen.getByText("Pre-order", { selector: "span.status" })).toBeInTheDocument();
   expect(screen.getByText("The retailer blocked the automated request (HTTP 403).")).toBeInTheDocument();
   await user.selectOptions(screen.getByLabelText("Retailer"), "ThinkRobotics");
   await user.type(screen.getByLabelText("Minimum price"), "5000");

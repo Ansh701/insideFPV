@@ -23,6 +23,11 @@ class DiscoveryFetcher:
         return "<h1>Existing product</h1><p>Out of stock</p>"
 
 
+class HatDiscoveryFetcher:
+    async def get_text(self, url: str) -> str:
+        return "<a href='/products/raspberry-pi-ai-hat'>Raspberry Pi AI HAT+</a>"
+
+
 async def test_category_discovery_inserts_new_searchable_product_once(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -81,6 +86,36 @@ async def test_category_discovery_rejects_irrelevant_accessories(
             select(Product).where(Product.canonical_url.contains("random-frame-screws"))
         )
         assert irrelevant is None
+
+
+async def test_companion_collection_can_discover_a_real_hat_with_correct_category(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        await seed_database(session)
+        await session.execute(update(CategoryWatch).values(enabled=False))
+        watch = await session.scalar(
+            select(CategoryWatch).where(
+                CategoryWatch.source_url.contains("thinkrobotics.com/collections/raspberry-pi")
+            )
+        )
+        assert watch is not None
+        watch.enabled = True
+        await session.commit()
+
+    result = await DiscoveryService(
+        session_factory,
+        registry=default_registry(),
+        fetcher=HatDiscoveryFetcher(),
+    ).run()
+
+    async with session_factory() as session:
+        product = await session.scalar(
+            select(Product).where(Product.canonical_url.contains("raspberry-pi-ai-hat"))
+        )
+        assert result.products_discovered == 1
+        assert product is not None
+        assert product.category == "HATs & Carrier Boards"
 
 
 async def test_category_discovery_failure_is_reported_without_deleting_products(
